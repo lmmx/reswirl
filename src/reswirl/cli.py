@@ -8,7 +8,7 @@ from .inventory import Inventory
 
 
 @click.command()
-@click.argument("package_name", type=str)
+@click.argument("username", type=str)
 @click.option(
     "--format",
     "-f",
@@ -16,12 +16,12 @@ from .inventory import Inventory
     default="table",
     help="Output format: table, csv, or json.",
 )
-def main(package_name: str, output_format: str) -> None:
+def main(username: str, output_format: str) -> None:
     """
     Command-line interface for igloosphinx.
     Retrieves `objects.inv` data for a PACKAGE_NAME, then outputs it in the requested format.
     """
-    inventory = Inventory(package_name=package_name)
+    inventory = Inventory(username=username)
     try:
         df = inventory.fetch_inventory()
     except Exception as exc:
