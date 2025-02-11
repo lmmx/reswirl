@@ -1,12 +1,13 @@
 # src/reswirl/inventory.py
-
 from __future__ import annotations
 
 import os
-import polars as pl
 from pathlib import Path
+
+import polars as pl
 from github import Github
 from platformdirs import user_cache_dir
+from upath import UPath
 
 ENV_GH_TOKEN = os.getenv("GITHUB_TOKEN")
 
@@ -138,3 +139,76 @@ class Inventory:
             data.write_ndjson(self._cache_file)
         except OSError as e:
             print(f"Failed to write to cache: {e}")
+
+    def walk_repository_files(
+        self,
+        pattern: str = "**",
+        no_recurse: bool = False,
+        skip_larger_than_mb: int | None = None,
+    ) -> pl.DataFrame:
+        """
+        Walks (recursively enumerates) files in each repository via UPath,
+        discovering (but not reading) file paths that match a given glob pattern.
+
+        Args:
+            pattern: Glob pattern for file listing. By default "**" (recursive).
+            no_recurse: If True, uses "*" (non-recursive) instead of the default "**".
+            skip_larger_than_mb: If set, skip listing files larger than this many MB.
+                                 By default, None (don't skip based on size).
+
+        Returns:
+            A Polars DataFrame with columns:
+                - "Repository_Name": str
+                - "File_Path": str (the path in the GitHub “filesystem”)
+                - "Is_Directory": bool
+                - "File_Size_Bytes": int
+                - "Dependencies": list (placeholder for future logic)
+                - "Config_Files": list (placeholder for future logic)
+
+        Notes:
+            - This can be **slow** for large repos or wide patterns, as it enumerates all matches.
+            - If skip_larger_than_mb is set, we call `p.size()` for each file, skipping ones
+              that exceed that threshold.
+            - “Dependencies” and “Config_Files” are placeholders for your later detection logic.
+        """
+        # Ensure we have a repo inventory
+        if self._inventory_df is None:
+            self.fetch_inventory()
+        # Adjust pattern if user wants a shallow (non-recursive) listing
+        if no_recurse:
+            pattern = "*"
+        records = []
+        for row in self._inventory_df.to_dicts():
+            repo_name = row["name"]
+            default_branch = row["default_branch"]
+            # Construct a GitHub UPath; note org=self.username for personal repos
+            ghpath = UPath(
+                "/",
+                protocol="github",
+                org=self.username,
+                repo=repo_name,
+                sha=default_branch,
+                username=self.username,  # used for BasicAuth
+                token=self.token,  # personal access token
+            )
+            for p in ghpath.glob(pattern):
+                # Check if directory
+                if is_dir := p.is_dir():
+                    file_size_bytes = 0
+                else:
+                    # For skipping large files or just capturing size
+                    file_size_bytes = p.stat().st_size
+                    if skip_larger_than_mb is not None:
+                        threshold_bytes = skip_larger_than_mb * 1_048_576
+                        if file_size_bytes > threshold_bytes:
+                            # Skip this file
+                            continue
+                records.append(
+                    {
+                        "repository_name": repo_name,
+                        "file_path": os.path.join(*p.parts),
+                        "is_directory": is_dir,
+                        "file_size_bytes": file_size_bytes,
+                    }
+                )
+        return pl.DataFrame(records)
