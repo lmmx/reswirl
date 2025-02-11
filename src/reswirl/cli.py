@@ -1,5 +1,3 @@
-# src/igloosphinx/cli.py
-
 from __future__ import annotations
 
 import sys
