@@ -22,8 +22,10 @@ requires-python = ">=3.11"
 dependencies = [
   "click>=8.1.8",
   "fsspec[github]>=2025.2.0",
+  "platformdirs>=4.3.6",
+  "pygithub>=2.5.0",
   "requests>=2.32.3",
-  "universal-pathlib>=0.2.6",
+  "universal-pathlib>=0.2.6"
 ]
 classifiers = [
   "Development Status :: 4 - Beta",
@@ -53,9 +55,9 @@ dev = [
   "pytest>=8.3.4"
 ]
 
+[project.scripts]
+reswirl = "reswirl.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/lmmx/reswirl"
 Repository = "https://github.com/lmmx/reswirl.git"
-
-[project.scripts]
-reswirl = "reswirl.cli:main"

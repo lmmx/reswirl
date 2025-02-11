@@ -1,55 +1,60 @@
-# src/igloosphinx/inventory.py
+# src/reswirl/inventory.py
 
 from __future__ import annotations
 
-import subprocess
-
+import os
 import polars as pl
-import requests
-from pypi_docs_url import get_intersphinx_url
-from sphinx.util.inventory import InventoryFile
+from pathlib import Path
+from github import Github
+from platformdirs import user_cache_dir
 
-from .convert import inventory_to_polars_df
+ENV_GH_TOKEN = os.getenv("GITHUB_TOKEN")
 
 
 class Inventory:
     """
-    Provides functionality to retrieve and parse a package's `objects.inv`
-    into a Polars DataFrame, using PyPI metadata to discover the documentation URL.
+    Provides functionality to retrieve and parse a GitHub user's public repositories
+    into a Polars DataFrame, caching results locally to avoid repeated API calls.
     """
 
     def __init__(
         self,
-        package_name: str,
-        version: str = "latest",
+        username: str,
         lazy: bool = False,
+        token: str | None = None,
+        use_cache: bool = True,
+        force_refresh: bool = False,
     ) -> None:
         """
         Initialise the Inventory object.
 
         Args:
-            package_name: The package name on PyPI.
-            version: Optional version indicator for future expansions (e.g., specific docs version).
+            username: The GitHub username to fetch repositories for.
             lazy: Whether to allow lazy Polars operations (not all transformations may be supported).
+            token: An optional GitHub personal access token for higher rate limits.
+            use_cache: Whether to use cached results if available.
+            force_refresh: If True, always refetch from GitHub and overwrite the cache.
         """
-        self.package_name = package_name
-        self.version = version
+        self.username = username
         self.lazy = lazy
+        self.token = token if token is not None else ENV_GH_TOKEN
+        self.use_cache = use_cache
+        self.force_refresh = force_refresh
         self._inventory_df: pl.DataFrame | None = None
+
+        # Initialize the cache location
+        self._cache_dir = Path(user_cache_dir(appname="reswirl"))
+        self._cache_dir.mkdir(exist_ok=True)
+        self._cache_file = self._cache_dir / f"{username}_repos.json"
 
     def fetch_inventory(self) -> pl.DataFrame:
         """
-        Fetches and parses the `objects.inv` file for the specified package.
-        Returns a Polars DataFrame with symbol data.
+        Fetches and parses the public repositories for the specified GitHub user.
+        Checks the local cache first (unless force_refresh=True).
+        Returns a Polars DataFrame with columns such as 'name', 'html_url', and 'description'.
         """
-        # 1. Discover the URL of the objects.inv via pypi-docs-url or direct PyPI metadata
-        objects_inv_url = self._discover_objects_inv()
-        # 2. Download the objects.inv file
-        raw_inv = self._download_inventory(objects_inv_url)
-        # 3. Parse the inventory into a Polars DataFrame
-        self._inventory_df = self._parse_inventory(
-            raw_data=raw_inv, uri=objects_inv_url
-        )
+        # 1. Retrieve the user’s repos (cached or fresh)
+        self._inventory_df = self._retrieve_repos()
         return self._inventory_df
 
     def review_version_changes(
@@ -58,77 +63,78 @@ class Inventory:
         to_v: str = "latest",
     ) -> pl.DataFrame:
         """
-        Compare documentation metadata across two versions.
-        Currently a placeholder returning an empty DataFrame.
-        Intended to be expanded upon for advanced comparisons.
+        Compare repository metadata across two versions (placeholder).
+        Currently returns a trivial DataFrame.
         """
-        # For now, simply demonstrate Polars usage:
         return pl.DataFrame({"from_v": [from_v], "to_v": [to_v]})
 
-    def _discover_objects_inv(self) -> str:
+    def _retrieve_repos(self) -> pl.DataFrame:
         """
-        Locates the objects.inv URL by invoking or simulating `pypi-docs-url`.
-        Replace with your actual discovery logic or library call.
+        Tries to use cached results if use_cache=True (and not force_refresh).
+        Otherwise, fetches from GitHub and caches the JSON if successful.
         """
-        # Placeholder: Attempt a dummy subprocess call to pypi-docs-url, returning a mocked URL
-        # In real usage, parse the stdout or otherwise gather the discovered URL
+        # If using cache and not forcing a refresh, try reading from file
+        if self.use_cache and not self.force_refresh:
+            cached_data = self._read_cache()
+            if cached_data is not None:
+                return cached_data
+
+        # Otherwise, fetch from GitHub
         try:
-            url = get_intersphinx_url(self.package_name)
+            repos_data = self._fetch_from_github()
+            # Cache the data
+            self._write_cache(repos_data)
+            return repos_data
         except Exception as e:
-            print(f"pypi-docs-url failed: {e}")
-            # If pypi-docs-url is not installed, fallback to direct PyPI metadata approach or error
-            url = self._fallback_metadata_lookup()
-        return url
+            # If something goes wrong with GitHub fetching, fallback to cache if it exists
+            cached_data = self._read_cache()
+            if cached_data is not None:
+                print(f"GitHub fetch failed ({e}), returning cached data.")
+                return cached_data
+            raise  # or handle this more gracefully in real usage
 
-    def _fallback_metadata_lookup(self) -> str:
+    def _fetch_from_github(self) -> pl.DataFrame:
         """
-        Fallback for discovering the objects.inv by hitting PyPI's JSON and applying heuristic logic.
+        Uses PyGithub to retrieve the user's public repositories.
         """
-        # Minimal example, expand upon real logic as needed
-        pypi_url = f"https://pypi.org/pypi/{self.package_name}/json"
-        response = requests.get(pypi_url, timeout=10)
-        if not response.ok:
-            raise ValueError(f"Could not fetch PyPI metadata for {self.package_name}")
+        gh = Github(self.token) if self.token else Github()
+        user = gh.get_user(self.username)
+        repos = user.get_repos()
 
-        data = response.json()
-        project_urls = data["info"].get("project_urls", {})
-        doc_url = project_urls.get("Documentation")
-        if not doc_url:
-            raise ValueError(
-                f"No documentation URL found in PyPI metadata for {self.package_name}",
-            )
+        data = [
+            {
+                "name": repo.name,
+                "default_branch": repo.default_branch,
+                "description": repo.description or "",
+                "archived": repo.archived,
+                "is_fork": repo.fork,
+                "issues": repo.open_issues,
+                "stars": repo.stargazers_count,
+                "forks": repo.forks_count,
+                "size": repo.size,
+            }
+            for repo in repos
+        ]
+        df = pl.DataFrame(data)
+        return df.lazy().collect() if self.lazy else df
 
-        # Hypothetically guess the objects.inv location
-        # You might need advanced heuristics, or user guidance
-        if doc_url.endswith("/"):
-            doc_url = doc_url[:-1]
-        objects_inv_url = doc_url + "/objects.inv"
-        return objects_inv_url
+    def _read_cache(self) -> pl.DataFrame | None:
+        """
+        Attempt to read previously cached JSON data from disk.
+        Returns None if no file or if something fails to load.
+        """
+        if not self._cache_file.is_file():
+            return None
+        try:
+            return pl.read_ndjson(self._cache_file)
+        except OSError:
+            return None
 
-    def _download_inventory(self, url: str) -> bytes:
+    def _write_cache(self, data: pl.DataFrame) -> None:
         """
-        Downloads the raw objects.inv file from the discovered URL.
-        """
-        resp = requests.get(url, timeout=10)
-        if resp.status_code != 200:
-            raise ValueError(f"Failed to retrieve objects.inv at {url}")
-        return resp.content
-
-    def _parse_inventory(self, raw_data: bytes, uri: str) -> pl.DataFrame:
-        """
-        Parses the raw objects.inv data into a Polars DataFrame.
-        This is a simplified placeholder. Real parsing requires
-        handling Sphinx's zlib-compressed format and tokenisation.
+        Write JSON data to the cache file.
         """
         try:
-            inv = InventoryFile.loads(raw_data, uri=uri)
-        except ValueError as exc:
-            msg = f"Unknown or unsupported inventory version: {exc!r}"
-            raise ValueError(msg) from exc
-        df = inventory_to_polars_df(inv, lazy=self.lazy)
-
-        # If lazy is desired, one might do:
-        if self.lazy:
-            # Convert to LazyFrame for subsequent transformations
-            return df.lazy().collect()
-        return df
+            data.write_ndjson(self._cache_file)
+        except OSError as e:
+            print(f"Failed to write to cache: {e}")
