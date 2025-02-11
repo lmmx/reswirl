@@ -25,6 +25,8 @@ class Inventory:
         token: str | None = None,
         use_cache: bool = True,
         force_refresh: bool = False,
+        repo_filter: str | pl.Expr | None = None,
+        tree_filter: str | pl.Expr | None = None,
     ) -> None:
         """
         Initialise the Inventory object.
@@ -35,6 +37,10 @@ class Inventory:
             token: An optional GitHub personal access token for higher rate limits.
             use_cache: Whether to use cached results if available.
             force_refresh: If True, always refetch from GitHub and overwrite the cache.
+            repo_filter: Either a Polars schema (column) name to filter (where True),
+                         or an Expr to filter the repository listing in `list_repos`.
+            tree_filter: Either a Polars schema (column) name to filter (where True),
+                         or an Expr to filter the repository tree in `walk_file_trees`.
         """
         self.username = username
         self.lazy = lazy
@@ -48,7 +54,7 @@ class Inventory:
         self._cache_dir.mkdir(exist_ok=True)
         self._cache_file = self._cache_dir / f"{username}_repos.json"
 
-    def fetch_inventory(self) -> pl.DataFrame:
+    def list_repos(self) -> pl.DataFrame:
         """
         Fetches and parses the public repositories for the specified GitHub user.
         Checks the local cache first (unless force_refresh=True).
@@ -140,7 +146,7 @@ class Inventory:
         except OSError as e:
             print(f"Failed to write to cache: {e}")
 
-    def walk_repository_files(
+    def walk_file_trees(
         self,
         pattern: str = "**",
         no_recurse: bool = False,
@@ -162,18 +168,15 @@ class Inventory:
                 - "File_Path": str (the path in the GitHub “filesystem”)
                 - "Is_Directory": bool
                 - "File_Size_Bytes": int
-                - "Dependencies": list (placeholder for future logic)
-                - "Config_Files": list (placeholder for future logic)
 
         Notes:
-            - This can be **slow** for large repos or wide patterns, as it enumerates all matches.
-            - If skip_larger_than_mb is set, we call `p.size()` for each file, skipping ones
-              that exceed that threshold.
-            - “Dependencies” and “Config_Files” are placeholders for your later detection logic.
+            - **Slow** for large repos or wide patterns, as it enumerates all matches.
+            - If skip_larger_than_mb is set, we call `p.stat().st_size` for each file,
+              skipping ones that exceed that threshold.
         """
         # Ensure we have a repo inventory
         if self._inventory_df is None:
-            self.fetch_inventory()
+            self.list_repos()
         # Adjust pattern if user wants a shallow (non-recursive) listing
         if no_recurse:
             pattern = "*"
