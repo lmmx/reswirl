@@ -212,6 +212,6 @@ class Inventory:
                         "file_path": os.path.join(*p.parts),
                         "is_directory": is_dir,
                         "file_size_bytes": file_size_bytes,
-                    }
+                    },
                 )
         return pl.DataFrame(records)
